@@ -99,7 +99,7 @@ func init_(ctx context.Context, pctx *processContext, args []string) error {
 		}
 	}
 	{
-		c := exec.Command("go", "mod", "edit", "-replace=gocloud.dev=/home/light/src/gocloud.dev")
+		c := exec.Command("go", "mod", "edit", "-replace=gocloud.dev=github.com/zombiezen/go-cloud@cli")
 		c.Dir = dir
 		c.Stdout = pctx.stderr
 		c.Stderr = pctx.stderr

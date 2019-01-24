@@ -43,6 +43,7 @@ var Set = wire.NewSet(
 // Server is a preconfigured HTTP server with diagnostic hooks.
 // The zero value is a server with the default options.
 type Server struct {
+	handler       http.Handler
 	reqlog        requestlog.Logger
 	healthHandler health.Handler
 	te            trace.Exporter
@@ -53,6 +54,9 @@ type Server struct {
 
 // Options is the set of optional parameters.
 type Options struct {
+	// Handler specifies the http.Handler. nil will use http.DefaultServeMux.
+	Handler http.Handler
+
 	// RequestLogger specifies the logger that will be used to log requests.
 	RequestLogger requestlog.Logger
 
@@ -83,6 +87,7 @@ func New(opts *Options) *Server {
 		}
 		srv.sampler = opts.DefaultSamplingPolicy
 		srv.driver = opts.Driver
+		srv.handler = opts.Handler
 	}
 	return srv
 }
@@ -104,8 +109,8 @@ func (srv *Server) init() {
 // ListenAndServe is a wrapper to use wherever http.ListenAndServe is used.
 // It wraps the passed-in http.Handler with a handler that handles tracing and
 // request logging. If the handler is nil, then http.DefaultServeMux will be used.
-// A configured Requestlogger will log all requests except HealthChecks.
-func (srv *Server) ListenAndServe(addr string, h http.Handler) error {
+// A configured RequestLogger will log all requests except HealthChecks.
+func (srv *Server) ListenAndServe(addr string) error {
 	srv.init()
 
 	// Setup health checks, /healthz route is taken by health checks by default.
@@ -118,7 +123,7 @@ func (srv *Server) ListenAndServe(addr string, h http.Handler) error {
 
 	mux := http.NewServeMux()
 	mux.Handle(hr, hcMux)
-	h = http.Handler(handler{h})
+	h := http.Handler(handler{srv.handler})
 	if srv.reqlog != nil {
 		h = requestlog.NewHandler(srv.reqlog, h)
 	}
