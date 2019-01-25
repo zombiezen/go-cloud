@@ -51,7 +51,7 @@ func main() {
 	err = gocloud(ctx, pctx, os.Args[1:])
 	close(done)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "%+v\n", err)
 		if isUsage(err) {
 			os.Exit(64)
 		}
@@ -78,6 +78,8 @@ func gocloud(ctx context.Context, pctx *processContext, args []string) error {
 	switch name, args := globalFlags.Arg(0), globalFlags.Args()[1:]; name {
 	case "init":
 		err = init_(ctx, pctx, args)
+	case "add":
+		err = add(ctx, pctx, args)
 	case "serve":
 		err = serve(ctx, pctx, args)
 	case "deploy":
