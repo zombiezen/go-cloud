@@ -15,7 +15,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"io"
 	"io/ioutil"
@@ -77,6 +79,8 @@ func serve(ctx context.Context, pctx *processContext, args []string) error {
 	defer func() { <-httpDone }()
 	serverPathA := filepath.Join(buildDir, "serverA")
 	serverPathB := filepath.Join(buildDir, "serverB")
+	configPathA := filepath.Join(buildDir, "configA.json")
+	configPathB := filepath.Join(buildDir, "configB.json")
 	portA, portB := *serverPort, (*serverPort)+1
 	urlA := &url.URL{
 		Scheme: "http",
@@ -102,14 +106,15 @@ func serve(ctx context.Context, pctx *processContext, args []string) error {
 	for {
 		log.Println("starting build")
 		var serverPath string
+		var configPath string
 		var port int
 		var serverURL *url.URL
 		if nextIsA {
-			serverPath, port, serverURL = serverPathA, portA, urlA
+			serverPath, configPath, port, serverURL = serverPathA, configPathA, portA, urlA
 		} else {
-			serverPath, port, serverURL = serverPathB, portB, urlB
+			serverPath, configPath, port, serverURL = serverPathB, configPathB, portB, urlB
 		}
-		err := buildServer(ctx, pctx.dir, serverPath, pctx.stderr)
+		err := buildServer(ctx, pctx.dir, serverPath, configPath, pctx.stderr)
 		if err != nil {
 			log.Printf("build error: %v", err)
 			if firstBuild {
@@ -124,7 +129,7 @@ func serve(ctx context.Context, pctx *processContext, args []string) error {
 		}
 
 		// Run server.
-		newServer := exec.Command(serverPath, fmt.Sprintf("--address=localhost:%d", port))
+		newServer := exec.Command(serverPath, fmt.Sprintf("--address=localhost:%d", port), "--config="+configPath)
 		newServer.Stdout = pctx.stdout
 		newServer.Stderr = pctx.stderr
 		if err := newServer.Start(); err != nil {
@@ -189,23 +194,53 @@ func serve(ctx context.Context, pctx *processContext, args []string) error {
 	}
 }
 
-func buildServer(ctx context.Context, dir string, outPath string, output io.Writer) error {
+func buildServer(ctx context.Context, dir string, exePath string, cfgPath string, logOut io.Writer) error {
+	{
+		c := exec.Command("terraform", "refresh", "-input=false")
+		c.Dir = filepath.Join(dir, "environments", "dev")
+		c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+		c.Stdout = logOut
+		c.Stderr = logOut
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("build server: refresh terraform state: %w", err)
+		}
+	}
+	{
+		c := exec.Command("terraform", "output", "-json", "server_config")
+		c.Dir = filepath.Join(dir, "environments", "dev")
+		c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+		outBuf := new(bytes.Buffer)
+		c.Stdout = outBuf
+		c.Stderr = logOut
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("build server: get server config: %w", err)
+		}
+		var outputVar struct {
+			Value json.RawMessage
+		}
+		if err := json.Unmarshal(outBuf.Bytes(), &outputVar); err != nil {
+			return fmt.Errorf("build server: get server config: %w", err)
+		}
+		if err := ioutil.WriteFile(cfgPath, []byte(outputVar.Value), 0666); err != nil {
+			return fmt.Errorf("build server: write server config: %w", err)
+		}
+	}
 	{
 		c := exec.Command("wire", "./...")
 		c.Dir = dir
 		c.Env = append(os.Environ(), "GO111MODULE=on")
-		c.Stdout = output
-		c.Stderr = output
+		c.Stdout = logOut
+		c.Stderr = logOut
 		if err := c.Run(); err != nil {
 			return fmt.Errorf("build server: %w", err)
 		}
 	}
 	{
-		c := exec.Command("go", "build", "-o", outPath)
+		c := exec.Command("go", "build", "-o", exePath)
 		c.Dir = dir
 		c.Env = append(os.Environ(), "GO111MODULE=on")
-		c.Stdout = output
-		c.Stderr = output
+		c.Stdout = logOut
+		c.Stderr = logOut
 		if err := c.Run(); err != nil {
 			return fmt.Errorf("build server: %w", err)
 		}

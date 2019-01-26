@@ -68,46 +68,6 @@ func init_(ctx context.Context, pctx *processContext, args []string) error {
 		return err
 	}
 	{
-		c := exec.Command("git", "init")
-		c.Dir = dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
-		}
-	}
-	{
-		c := exec.Command("go", "mod", "init", *module)
-		c.Dir = dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
-		}
-	}
-	{
-		c := exec.Command("go", "get",
-			"gocloud.dev@v0.9.0",
-			"github.com/google/wire@v0.2.1",
-			"github.com/gorilla/mux@v1.6.2",
-			"github.com/spf13/viper@v1.3.1")
-		c.Dir = dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
-		}
-	}
-	{
-		c := exec.Command("go", "mod", "edit", "-replace=gocloud.dev=github.com/zombiezen/go-cloud@cli")
-		c.Dir = dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
-		}
-	}
-	{
 		buf := new(bytes.Buffer)
 		fmt.Fprintf(buf, "/%s\n", slashpath.Base(*module))
 		fmt.Fprintln(buf, "*.tfstate")
@@ -136,10 +96,17 @@ import (
 func main() {
 	ctx := context.Background()
 	pflag.String("address", "localhost:8080", "address to listen on")
+	configPath := pflag.String("config", "", "path to config file")
 	pflag.Parse()
 	config := viper.New()
 	config.SetDefault("trace_fraction", 0.05)
 	config.BindPFlags(pflag.CommandLine)
+	if *configPath != "" {
+		config.SetConfigFile(*configPath)
+		if err := config.ReadInConfig(); err != nil {
+			log.Fatal(err)
+		}
+	}
 	srv, cleanup, err := setup(ctx, config)
 	if err != nil {
 		log.Fatal(err)
@@ -152,6 +119,7 @@ func main() {
 }
 
 type application struct {
+	config *viper.Viper
 }
 
 func (app *application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +189,99 @@ func traceSampler(config *viper.Viper) trace.Sampler {
 		}
 	}
 	{
+		const devOutputsSource = `# This is the Terraform configuration used for development.
+# It should only include output variables.
+
+output "server_config" {
+	description = "Configuration settings passed to the server."
+	value {
+		# Any values you set here will be accessible in application.config.
+
+		# Example:
+		# foo = "bar"
+	}
+}
+`
+		outPath := filepath.Join(dir, "environments", "dev", "outputs.tf")
+		if err := os.MkdirAll(filepath.Dir(outPath), 0777); err != nil {
+			return err
+		}
+		err := ioutil.WriteFile(outPath, []byte(devOutputsSource), 0666)
+		if err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("go", "mod", "init", *module)
+		c.Dir = dir
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("go", "get",
+			"gocloud.dev@v0.9.0",
+			"github.com/google/wire@v0.2.1",
+			"github.com/gorilla/mux@v1.6.2",
+			"github.com/spf13/viper@v1.3.1")
+		c.Dir = dir
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("go", "mod", "edit", "-replace=gocloud.dev=github.com/zombiezen/go-cloud@cli")
+		c.Dir = dir
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
 		c := exec.Command("wire", "./...")
+		c.Dir = dir
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("terraform", "init", "-input=false")
+		c.Env = append(pctx.env, "TF_IN_AUTOMATION=1")
+		c.Dir = filepath.Join(dir, "environments", "dev")
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("terraform", "refresh", "-input=false")
+		c.Env = append(pctx.env, "TF_IN_AUTOMATION=1")
+		c.Dir = filepath.Join(dir, "environments", "dev")
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("git", "init")
+		c.Dir = dir
+		c.Stdout = pctx.stderr
+		c.Stderr = pctx.stderr
+		if err := c.Run(); err != nil {
+			return err
+		}
+	}
+	{
+		c := exec.Command("git", "add", ".")
 		c.Dir = dir
 		c.Stdout = pctx.stderr
 		c.Stderr = pctx.stderr
