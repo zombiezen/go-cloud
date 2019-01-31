@@ -48,7 +48,7 @@ func main() {
 		case <-done:
 		}
 	}()
-	err = gocloud(ctx, pctx, os.Args[1:])
+	err = gocdk(ctx, pctx, os.Args[1:])
 	close(done)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%+v\n", err)
@@ -59,8 +59,8 @@ func main() {
 	}
 }
 
-func gocloud(ctx context.Context, pctx *processContext, args []string) error {
-	globalFlags := flag.NewFlagSet("gocloud", flag.ContinueOnError)
+func gocdk(ctx context.Context, pctx *processContext, args []string) error {
+	globalFlags := flag.NewFlagSet("gocdk", flag.ContinueOnError)
 	globalFlags.SetOutput(pctx.stderr)
 	if err := globalFlags.Parse(args); err == flag.ErrHelp {
 		globalFlags.SetOutput(pctx.stdout)
@@ -88,7 +88,7 @@ func gocloud(ctx context.Context, pctx *processContext, args []string) error {
 		return usagef("unknown command %s", name)
 	}
 	if err != nil {
-		return fmt.Errorf("gocloud: %w", err)
+		return fmt.Errorf("gocdk: %w", err)
 	}
 	return nil
 }

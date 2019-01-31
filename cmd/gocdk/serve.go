@@ -38,7 +38,7 @@ import (
 )
 
 func serve(ctx context.Context, pctx *processContext, args []string) error {
-	f := flag.NewFlagSet("gocloud serve", flag.ContinueOnError)
+	f := flag.NewFlagSet("gocdk serve", flag.ContinueOnError)
 	f.SetOutput(pctx.stderr)
 	address := f.String("address", "localhost:8080", "address to serve on")
 	serverPort := f.Int("server_port", 9090, "first server port")
@@ -56,7 +56,7 @@ func serve(ctx context.Context, pctx *processContext, args []string) error {
 	watcher := make(chan os.Signal, 1)
 	signal.Notify(watcher, unix.SIGUSR1)
 
-	buildDir, err := ioutil.TempDir("", "gocloud-build")
+	buildDir, err := ioutil.TempDir("", "gocdk-build")
 	if err != nil {
 		return err
 	}

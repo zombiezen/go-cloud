@@ -34,7 +34,7 @@ import (
 )
 
 func deploy(ctx context.Context, pctx *processContext, args []string) error {
-	f := flag.NewFlagSet("gocloud deploy", flag.ContinueOnError)
+	f := flag.NewFlagSet("gocdk deploy", flag.ContinueOnError)
 	deployEnv := f.String("env", "prod", "Environment to deploy")
 	f.SetOutput(pctx.stderr)
 	if err := f.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -208,7 +208,7 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 			return err
 		}
 	}
-	planFile, err := ioutil.TempFile("", "gocloud-tfplan")
+	planFile, err := ioutil.TempFile("", "gocdk-tfplan")
 	if err != nil {
 		return err
 	}

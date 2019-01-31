@@ -30,7 +30,7 @@ import (
 )
 
 func init_(ctx context.Context, pctx *processContext, args []string) error {
-	f := flag.NewFlagSet("gocloud init", flag.ContinueOnError)
+	f := flag.NewFlagSet("gocdk init", flag.ContinueOnError)
 	f.SetOutput(pctx.stderr)
 	module := f.String("module", "", "import path of the module")
 	if err := f.Parse(args); errors.Is(err, flag.ErrHelp) {

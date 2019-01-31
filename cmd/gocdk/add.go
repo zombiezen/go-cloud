@@ -35,7 +35,7 @@ import (
 )
 
 func add(ctx context.Context, pctx *processContext, args []string) error {
-	f := flag.NewFlagSet("gocloud add", flag.ContinueOnError)
+	f := flag.NewFlagSet("gocdk add", flag.ContinueOnError)
 	f.SetOutput(pctx.stderr)
 	if err := f.Parse(args); errors.Is(err, flag.ErrHelp) {
 		f.SetOutput(pctx.stdout)
