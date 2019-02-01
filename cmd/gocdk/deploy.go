@@ -36,6 +36,8 @@ import (
 func deploy(ctx context.Context, pctx *processContext, args []string) error {
 	f := flag.NewFlagSet("gocdk deploy", flag.ContinueOnError)
 	deployEnv := f.String("env", "prod", "Environment to deploy")
+	runTerraform := f.Bool("terraform", true, "Apply Terraform")
+	useCloudBuild := f.Bool("cloudbuild", false, "Use Cloud Build instead of local Docker")
 	f.SetOutput(pctx.stderr)
 	if err := f.Parse(args); errors.Is(err, flag.ErrHelp) {
 		f.SetOutput(pctx.stdout)
@@ -129,24 +131,41 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 			fmt.Fprintf(buf, "}\n")
 			fmt.Fprintln(buf)
 			buf.WriteString(`resource "google_project_service" "cloudbuild" {
-		service            = "cloudbuild.googleapis.com"
-		disable_on_destroy = false
-	}
+  service            = "cloudbuild.googleapis.com"
+  disable_on_destroy = false
+}
 
-	resource "google_project_service" "trace" {
-		service            = "cloudtrace.googleapis.com"
-		disable_on_destroy = false
-	}
+resource "google_project_service" "compute" {
+  service            = "compute.googleapis.com"
+  disable_on_destroy = false
+}
 
-	data "google_compute_image" "cos" {
-		family  = "cos-stable"
-		project = "cos-cloud"
-	}`)
+resource "google_project_service" "trace" {
+  service            = "cloudtrace.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_compute_firewall" "allow_http" {
+  name = "default-allow-http"
+  network = "default"
+  source_ranges = ["0.0.0.0/0"]
+  target_tags = ["http-server"]
+  allow {
+    protocol = "tcp"
+    ports = ["80"]
+  }
+}
+
+data "google_compute_image" "cos" {
+  family  = "cos-stable"
+  project = "cos-cloud"
+}` + "\n")
 			fmt.Fprintln(buf)
 			fmt.Fprintf(buf, "resource \"google_compute_instance_group\" \"servers\" {\n")
 			fmt.Fprintf(buf, "  name        = %q\n", shortName+"-servers")
 			fmt.Fprintf(buf, "  description = %q\n", "Instances running the "+shortName+" service.")
 			fmt.Fprintf(buf, "  zone        = %q\n", "us-central1-a")
+			fmt.Fprintf(buf, "  depends_on  = [\"google_project_service.compute\"]\n")
 			fmt.Fprintf(buf, "}\n")
 			fmt.Fprintln(buf)
 			fmt.Fprintf(buf, "resource \"google_compute_instance_template\" \"server\" {\n")
@@ -164,7 +183,12 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 			fmt.Fprintln(buf)
 			buf.WriteString(`  network_interface {
 			network = "default"
+			access_config {}
 		}`)
+			fmt.Fprintf(buf, "  service_account {\n")
+			fmt.Fprintf(buf, "    scopes = [\"cloud-platform\"]\n")
+			fmt.Fprintf(buf, "  }\n")
+			fmt.Fprintf(buf, "  depends_on  = [\"google_project_service.compute\"]\n")
 			fmt.Fprintf(buf, "}\n")
 			err := ioutil.WriteFile(filepath.Join(envDir, "main.tf"), buf.Bytes(), 0666)
 			if err != nil {
@@ -177,19 +201,19 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 			fmt.Fprintf(buf, "	description = \"The GCP project ID.\"\n")
 			fmt.Fprintf(buf, "}\n\n")
 			buf.WriteString(`output "gce_zone" {
-		value       = "${google_compute_instance_group.servers.zone}"
-		description = "Compute Engine zone to create instances in."
-	}
+  value       = "${google_compute_instance_group.servers.zone}"
+  description = "Compute Engine zone to create instances in."
+}
 
-	output "gce_instance_group" {
-		value       = "${google_compute_instance_group.servers.name}"
-		description = "Compute Engine group to create instances in."
-	}
+output "gce_instance_group" {
+  value       = "${google_compute_instance_group.servers.name}"
+  description = "Compute Engine group to create instances in."
+}
 
-	output "gce_instance_template" {
-		value       = "${google_compute_instance_template.server.name}"
-		description = "Compute Engine instance template to use when creating instances."
-	}`)
+output "gce_instance_template" {
+  value       = "${google_compute_instance_template.server.name}"
+  description = "Compute Engine instance template to use when creating instances."
+}`)
 			err = ioutil.WriteFile(filepath.Join(envDir, "outputs.tf"), buf.Bytes(), 0666)
 			if err != nil {
 				return err
@@ -208,39 +232,41 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 			return err
 		}
 	}
-	planFile, err := ioutil.TempFile("", "gocdk-tfplan")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := os.Remove(planFile.Name()); err != nil {
-			log.Printf("Cleaning up plan: %v", err)
-		}
-	}()
-	{
-		c := exec.Command("terraform", "plan", "-input=false", "-out="+planFile.Name())
-		c.Dir = envDir
-		c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
+	if *runTerraform {
+		planFile, err := ioutil.TempFile("", "gocdk-tfplan")
+		if err != nil {
 			return err
 		}
-	}
-	fmt.Fprint(pctx.stdout, "OK to proceed (yes)? ")
-	if line, err := pctx.readLine(); err != nil {
-		return err
-	} else if line != "yes" {
-		return errors.New("canceled")
-	}
-	{
-		c := exec.Command("terraform", "apply", "-input=false", planFile.Name())
-		c.Dir = envDir
-		c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
+		defer func() {
+			if err := os.Remove(planFile.Name()); err != nil {
+				log.Printf("Cleaning up plan: %v", err)
+			}
+		}()
+		{
+			c := exec.Command("terraform", "plan", "-input=false", "-out="+planFile.Name())
+			c.Dir = envDir
+			c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+			c.Stdout = pctx.stderr
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
+		}
+		fmt.Fprint(pctx.stdout, "OK to proceed (yes)? ")
+		if line, err := pctx.readLine(); err != nil {
 			return err
+		} else if line != "yes" {
+			return errors.New("canceled")
+		}
+		{
+			c := exec.Command("terraform", "apply", "-input=false", planFile.Name())
+			c.Dir = envDir
+			c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+			c.Stdout = pctx.stderr
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
 		}
 	}
 	type tfString struct {
@@ -251,6 +277,9 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 		GCEZone             tfString `json:"gce_zone"`
 		GCEInstanceGroup    tfString `json:"gce_instance_group"`
 		GCEInstanceTemplate tfString `json:"gce_instance_template"`
+		ServerConfig        struct {
+			Value json.RawMessage
+		} `json:"server_config"`
 	}
 	{
 		c := exec.Command("terraform", "output", "-json")
@@ -267,56 +296,114 @@ func deploy(ctx context.Context, pctx *processContext, args []string) error {
 		}
 	}
 	imageName := "gcr.io/" + tfOutput.GCPProjectID.Value + "/" + shortName
-	{
-		c := exec.Command("docker", "build", "-t", imageName, ".")
+	if *useCloudBuild {
+		c := exec.Command("gcloud", "--project="+tfOutput.GCPProjectID.Value, "builds", "submit", "-t", imageName, ".")
 		c.Dir = pctx.dir
 		c.Stdout = pctx.stderr
 		c.Stderr = pctx.stderr
 		if err := c.Run(); err != nil {
 			return err
 		}
-	}
-	var digest string
-	{
-		// TODO(light): Get the exact image from the build step or generate a unique-ish tag.
-		c := exec.Command("docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", imageName)
-		c.Dir = pctx.dir
-		out := new(strings.Builder)
-		c.Stdout = out
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
+	} else {
+		{
+			c := exec.Command("docker", "build", "-t", imageName, ".")
+			c.Dir = pctx.dir
+			c.Stdout = pctx.stderr
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
 		}
-		digest = strings.TrimSuffix(out.String(), "\n")
-	}
-	{
-		c := exec.Command("gcloud", "--project="+tfOutput.GCPProjectID.Value, "auth", "configure-docker")
-		c.Dir = pctx.dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
+		var digest string
+		{
+			// TODO(light): Get the exact image from the build step or generate a unique-ish tag.
+			c := exec.Command("docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", imageName)
+			c.Dir = pctx.dir
+			out := new(strings.Builder)
+			c.Stdout = out
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
+			digest = strings.TrimSuffix(out.String(), "\n")
 		}
-	}
-	{
-		c := exec.Command("docker", "push", imageName)
-		c.Dir = pctx.dir
-		c.Stdout = pctx.stderr
-		c.Stderr = pctx.stderr
-		if err := c.Run(); err != nil {
-			return err
+		{
+			c := exec.Command("gcloud", "--project="+tfOutput.GCPProjectID.Value, "auth", "configure-docker")
+			c.Dir = pctx.dir
+			c.Stdout = pctx.stderr
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
 		}
+		{
+			c := exec.Command("docker", "push", imageName)
+			c.Dir = pctx.dir
+			c.Stdout = pctx.stderr
+			c.Stderr = pctx.stderr
+			if err := c.Run(); err != nil {
+				return err
+			}
+		}
+		imageName += "@" + digest
 	}
 	instanceSuffix, err := randomDigits(6)
 	if err != nil {
 		return err
 	}
 	instanceName := shortName + "-" + instanceSuffix
+	cloudConfig := map[string]interface{}{
+		"write_files": []map[string]interface{}{
+			{
+				"path":        "/etc/mycontainer/config.json",
+				"permissions": 0644,
+				"owner":       "root",
+				"content":     string(tfOutput.ServerConfig.Value),
+			},
+			{
+				"path":        "/etc/systemd/system/mycontainer.service",
+				"permissions": 0644,
+				"owner":       "root",
+				"content": "[Unit]\nDescription = Run container built by Go CDK\n" +
+					"Wants=gcr-online.target\n" +
+					"After=gcr-online.target\n" +
+					"[Service]\n" +
+					"Environment=\"HOME=/home/mycontainer\"\n" +
+					"ExecStartPre=/usr/bin/docker-credential-gcr configure-docker\n" +
+					"ExecStart=/usr/bin/docker run --rm -p 80:80 -v /etc/mycontainer:/etc/mycontainer:ro --name=mycontainer " + imageName + " --config=/etc/mycontainer/config.json\n" +
+					"ExecStop=/usr/bin/docker stop mycontainer\n" +
+					"ExecStopPost=/usr/bin/docker rm mycontainer\n",
+			},
+		},
+		"runcmd": []string{
+			"systemctl daemon-reload",
+			"systemctl start mycontainer.service",
+		},
+	}
+	cloudConfigJSON, err := json.Marshal(cloudConfig)
+	if err != nil {
+		return err
+	}
+	cloudConfigFile, err := ioutil.TempFile("", "gocdk-cloud-config")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		name := cloudConfigFile.Name()
+		cloudConfigFile.Close()
+		os.Remove(name)
+	}()
+	if _, err := cloudConfigFile.WriteString("#cloud-config\n"); err != nil {
+		return err
+	}
+	if _, err := cloudConfigFile.Write(cloudConfigJSON); err != nil {
+		return err
+	}
 	{
-		c := exec.Command("gcloud", "--project="+tfOutput.GCPProjectID.Value, "compute", "instances", "create-with-container",
+		c := exec.Command("gcloud", "--project="+tfOutput.GCPProjectID.Value, "compute", "instances", "create",
 			instanceName,
 			"--zone="+tfOutput.GCEZone.Value,
-			"--container-image="+imageName+"@"+digest,
+			"--metadata-from-file=user-data="+cloudConfigFile.Name(),
 			"--source-instance-template="+tfOutput.GCEInstanceTemplate.Value,
 		)
 		c.Dir = pctx.dir
